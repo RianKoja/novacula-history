@@ -1,0 +1,52 @@
+name: track
+
+on:
+  schedule:
+    - cron: "17 5 * * *" # daily
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: track
+
+jobs:
+  track:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # commit the day's rows and chart
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+
+      # Scores change only with releases (Novacula DESIGN.md 11d), so markers line up with steps.
+      - name: Check out the latest Novacula release on the latest stable Lean
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag=$(gh api repos/RianKoja/novacula/releases/latest --jq .tag_name)
+          lean=$(gh api repos/leanprover/lean4/releases/latest --jq .tag_name)
+          git clone -q --depth 1 -b "$tag" https://github.com/RianKoja/novacula novacula
+          echo "leanprover/lean4:$lean" > novacula/lean-toolchain
+          echo "TAG=$tag" >> "$GITHUB_ENV"
+          echo "LEAN=${lean#v}" >> "$GITHUB_ENV"
+
+      - uses: leanprover/lean-action@50fcf42d2e460296f1a34b402e990d1b24f8b596 # v1.6.0
+        with:
+          lake-package-directory: novacula
+          auto-config: false
+          build: false
+          use-github-cache: false
+
+      - name: Track
+        working-directory: novacula
+        run: make track HISTORY="$GITHUB_WORKSPACE/history.csv" CHART="$GITHUB_WORKSPACE/history.svg"
+
+      - name: Commit
+        run: |
+          git add history.csv history.svg
+          if git diff --cached --quiet; then echo "nothing to commit"; exit 0; fi
+          git -c user.name="github-actions[bot]" \
+            -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
+            commit -q -m "track: $(date -u +%F) on Lean $LEAN with novacula $TAG"
+          git push -q
